@@ -1,0 +1,27 @@
+{
+  "name": "basketall-ai",
+  "version": "0.0.0",
+  "description": "basketALL - Where Basketball Meets Football! A 7v7 hybrid sport game for Reddit.",
+  "main": "src/main.tsx",
+  "type": "module",
+  "scripts": {
+    "dev": "devvit playtest",
+    "upload": "devvit upload",
+    "publish": "devvit publish"
+  },
+  "keywords": [
+    "reddit",
+    "devvit",
+    "gamemaker",
+    "basketball",
+    "football",
+    "sports",
+    "game"
+  ],
+  "author": "",
+  "license": "BSD-3-Clause",
+  "devDependencies": {
+    "@devvit/public-api": "0.12.8"
+  },
+  "private": true
+}

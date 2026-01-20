@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>basketALL</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #1a1a2e;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            overflow: hidden;
+        }
+        #gameContainer {
+            position: relative;
+            touch-action: none;
+        }
+        #gameCanvas {
+            display: block;
+            border: 3px solid #4ecdc4;
+            border-radius: 8px;
+        }
+        #touchControls {
+            display: none;
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            gap: 20px;
+        }
+        .touchBtn {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            border: 2px solid #4ecdc4;
+            background: rgba(78, 205, 196, 0.3);
+            color: white;
+            font-size: 12px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        @media (pointer: coarse) {
+            #touchControls { display: flex; }
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+    </div>
+
+    <script>
+    // ==================== GAME CONFIGURATION ====================
+    const CONFIG = {
+        WIDTH: 800,
+        HEIGHT: 600,
+        FIELD_TOP: 50,
+        FIELD_BOTTOM: 550,
+        SHOT_CLOCK_MAX: 24 * 60,
+        HALF_DURATION: 5 * 60 * 60,
+        MAX_DOWNS: 4,
+        PLAYERS_PER_TEAM: 7
+    };
+
+    // ==================== TEAMS ====================
+    const TEAM_DATA = [
+        { name: "Blaze Battalion", primary: "#e63946", secondary: "#f4a261", tier: 1 },
+        { name: "Thunder Wolves", primary: "#7b2cbf", secondary: "#e0aaff", tier: 2 },
+        { name: "Frost Giants", primary: "#48cae4", secondary: "#ffffff", tier: 3 },
+        { name: "Shadow Hawks", primary: "#495057", secondary: "#adb5bd", tier: 4 }
+    ];
+
+    const TIER_STATS = [
+        { shooting: 0.70, defense: 85, basketSpeed: 5, tackleChance: 0.35 },
+        { shooting: 0.55, defense: 70, basketSpeed: 4, tackleChance: 0.28 },
+        { shooting: 0.45, defense: 55, basketSpeed: 3, tackleChance: 0.20 },
+        { shooting: 0.35, defense: 40, basketSpeed: 2, tackleChance: 0.12 }
+    ];
+
+    // ==================== GAME STATE ====================
+    let canvas, ctx;
+    let gameState = "MENU"; // MENU, TEAM_SELECT, PRE_PLAY, PLAYING, POST_PLAY, HALFTIME, GAMEOVER, SHOOTOUT
+    let teams = [];
+    let playerTeamId = 0;
+    let cpuTeamId = 1;
+    let offenseTeam = 0;
+    let currentDown = 1;
+    let selectedDistance = 20;
+    let pointValue = 20;
+    let scorePlayer = 0;
+    let scoreCPU = 0;
+    let gameTimer = CONFIG.HALF_DURATION;
+    let shotClock = CONFIG.SHOT_CLOCK_MAX;
+    let currentHalf = 1;
+    let selectedTeamIndex = 0;
+
+    // Game objects
+    let players = [];
+    let ball = null;
+    let basket = null;
+    let ballCarrier = null;
+
+    // Input state
+    let keys = {};
+    let mouse = { x: 0, y: 0, clicked: false };
+    let shootPower = 0;
+    let isShooting = false;
+    let showPowerMeter = false;
+
+    // Post-play state
+    let postPlayTimer = 0;
+    let switchPossession = false;
+    let lastPlayResult = "";
+
+    // ==================== INITIALIZATION ====================
+    function init() {
+        canvas = document.getElementById('gameCanvas');
+        ctx = canvas.getContext('2d');
+
+        // Resize for mobile
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // Input handlers
+        document.addEventListener('keydown', (e) => { keys[e.code] = true; });
+        document.addEventListener('keyup', (e) => {
+            keys[e.code] = false;
+            if (e.code === 'Space' && isShooting) {
+                releaseShot();
+            }
+        });
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = (e.clientX - rect.left) * (CONFIG.WIDTH / rect.width);
+            mouse.y = (e.clientY - rect.top) * (CONFIG.HEIGHT / rect.height);
+        });
+        canvas.addEventListener('click', handleClick);
+        canvas.addEventListener('touchstart', handleTouch, { passive: false });
+        canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+        canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
+
+        // Initialize teams with randomized tiers
+        initTeams();
+
+        // Start game loop
+        requestAnimationFrame(gameLoop);
+    }
+
+    function resizeCanvas() {
+        const maxWidth = Math.min(window.innerWidth - 20, 800);
+        const maxHeight = Math.min(window.innerHeight - 20, 600);
+        const scale = Math.min(maxWidth / CONFIG.WIDTH, maxHeight / CONFIG.HEIGHT);
+        canvas.style.width = (CONFIG.WIDTH * scale) + 'px';
+        canvas.style.height = (CONFIG.HEIGHT * scale) + 'px';
+    }
+
+    function initTeams() {
+        // Shuffle tier assignments
+        let tierAssignments = [0, 1, 2, 3];
+        for (let i = tierAssignments.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [tierAssignments[i], tierAssignments[j]] = [tierAssignments[j], tierAssignments[i]];
+        }
+
+        teams = TEAM_DATA.map((team, i) => ({
+            ...team,
+            ...TIER_STATS[tierAssignments[i]],
+            actualTier: tierAssignments[i] + 1
+        }));
+    }
+
+    // ==================== GAME OBJECTS ====================
+    function createPlayers() {
+        players = [];
+        const playerTeam = teams[playerTeamId];
+        const cpuTeam = teams[cpuTeamId];
+
+        // Create player's team (offense)
+        for (let i = 0; i < CONFIG.PLAYERS_PER_TEAM; i++) {
+            players.push({
+                x: 80 + i * 95,
+                y: 100,
+                teamId: playerTeamId,
+                color: playerTeam.primary,
+                speed: 4,
+                shooting: playerTeam.shooting,
+                isBallCarrier: false,
+                isOffense: true,
+                jerseyNum: Math.floor(Math.random() * 99)
+            });
+        }
+
+        // Create CPU team (defense)
+        for (let i = 0; i < CONFIG.PLAYERS_PER_TEAM; i++) {
+            players.push({
+                x: 80 + i * 95,
+                y: 400,
+                teamId: cpuTeamId,
+                color: cpuTeam.primary,
+                speed: 3.5,
+                shooting: cpuTeam.shooting,
+                isBallCarrier: false,
+                isOffense: false,
+                jerseyNum: Math.floor(Math.random() * 99),
+                tackleCooldown: 0
+            });
+        }
+    }
+
+    function createBall() {
+        ball = {
+            x: 0, y: 0,
+            state: "HELD", // HELD, PASSING, SHOOTING
+            holder: null,
+            startX: 0, startY: 0,
+            targetX: 0, targetY: 0,
+            progress: 0,
+            speed: 0.03,
+            arcHeight: 100,
+            shotPower: 0
+        };
+    }
+
+    function createBasket() {
+        const pixelsPerYard = (CONFIG.FIELD_BOTTOM - CONFIG.FIELD_TOP) / 50;
+        basket = {
+            x: CONFIG.WIDTH / 2,
+            y: CONFIG.FIELD_TOP + selectedDistance * pixelsPerYard,
+            baseX: CONFIG.WIDTH / 2,
+            moveSpeed: teams[cpuTeamId].basketSpeed,
+            moveDir: 1,
+            moveRange: 120,
+            glowAlpha: 0,
+            glowDir: 1
+        };
+    }
+
+    function setupGame() {
+        createPlayers();
+        createBall();
+        createBasket();
+        resetPositions();
+        setupBallCarrier();
+    }
+
+    function resetPositions() {
+        const pixelsPerYard = (CONFIG.FIELD_BOTTOM - CONFIG.FIELD_TOP) / 50;
+        const offenseY = 100;
+        const defenseY = CONFIG.FIELD_TOP + selectedDistance * pixelsPerYard + 80;
+
+        let offenseIdx = 0;
+        let defenseIdx = 0;
+
+        players.forEach(p => {
+            if ((offenseTeam === 0 && p.teamId === playerTeamId) ||
+                (offenseTeam === 1 && p.teamId === cpuTeamId)) {
+                p.x = 80 + offenseIdx * 95;
+                p.y = offenseY;
+                p.isOffense = true;
+                offenseIdx++;
+            } else {
+                p.x = 80 + defenseIdx * 95;
+                p.y = defenseY;
+                p.isOffense = false;
+                defenseIdx++;
+            }
+            p.isBallCarrier = false;
+        });
+
+        // Update basket position
+        basket.y = CONFIG.FIELD_TOP + selectedDistance * pixelsPerYard;
+    }
+
+    function setupBallCarrier() {
+        const offensePlayers = players.filter(p => p.isOffense);
+        const centerPlayer = offensePlayers.reduce((closest, p) => {
+            return Math.abs(p.x - CONFIG.WIDTH / 2) < Math.abs(closest.x - CONFIG.WIDTH / 2) ? p : closest;
+        });
+        centerPlayer.isBallCarrier = true;
+        ballCarrier = centerPlayer;
+        ball.holder = centerPlayer;
+        ball.state = "HELD";
+    }
+
+    // ==================== INPUT HANDLING ====================
+    function handleClick(e) {
+        const rect = canvas.getBoundingClientRect();
+        const x = (e.clientX - rect.left) * (CONFIG.WIDTH / rect.width);
+        const y = (e.clientY - rect.top) * (CONFIG.HEIGHT / rect.height);
+
+        if (gameState === "MENU") {
+            gameState = "TEAM_SELECT";
+        } else if (gameState === "TEAM_SELECT") {
+            // Check team card clicks
+            for (let i = 0; i < 4; i++) {
+                const cardX = 100 + i * 160;
+                const cardY = CONFIG.HEIGHT / 2;
+                if (x > cardX - 60 && x < cardX + 60 && y > cardY - 80 && y < cardY + 80) {
+                    playerTeamId = i;
+                    cpuTeamId = (i + 1 + Math.floor(Math.random() * 3)) % 4;
+                    setupGame();
+                    gameState = "PRE_PLAY";
+                    return;
+                }
+            }
+        } else if (gameState === "PRE_PLAY" && offenseTeam === 0) {
+            // Distance selection
+            const distances = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
+            for (let i = 0; i < 10; i++) {
+                const btnX = 80 + (i % 5) * 130;
+                const btnY = CONFIG.HEIGHT - 140 + Math.floor(i / 5) * 50;
+                if (x > btnX - 55 && x < btnX + 55 && y > btnY - 20 && y < btnY + 20) {
+                    selectedDistance = distances[i];
+                    pointValue = selectedDistance;
+                    return;
+                }
+            }
+            // Start button
+            if (x > CONFIG.WIDTH/2 - 80 && x < CONFIG.WIDTH/2 + 80 &&
+                y > CONFIG.HEIGHT - 50 && y < CONFIG.HEIGHT - 10) {
+                startPlay();
+            }
+        } else if (gameState === "PLAYING" && offenseTeam === 0 && ball.state === "HELD") {
+            // Pass to clicked teammate
+            const clicked = players.find(p => {
+                const dist = Math.hypot(p.x - x, p.y - y);
+                return dist < 25 && p.teamId === playerTeamId && !p.isBallCarrier && p.isOffense;
+            });
+            if (clicked) {
+                passBall(ballCarrier, clicked);
+            }
+        } else if (gameState === "HALFTIME" || gameState === "GAMEOVER") {
+            if (gameState === "HALFTIME") {
+                gameState = "PRE_PLAY";
+            } else {
+                gameState = "MENU";
+                initTeams();
+                scorePlayer = 0;
+                scoreCPU = 0;
+                currentHalf = 1;
+                gameTimer = CONFIG.HALF_DURATION;
+            }
+        }
+    }
+
+    function handleTouch(e) {
+        e.preventDefault();
+        const touch = e.touches[0];
+        const rect = canvas.getBoundingClientRect();
+        mouse.x = (touch.clientX - rect.left) * (CONFIG.WIDTH / rect.width);
+        mouse.y = (touch.clientY - rect.top) * (CONFIG.HEIGHT / rect.height);
+        handleClick({ clientX: touch.clientX, clientY: touch.clientY });
+    }
+
+    function handleTouchMove(e) {
+        e.preventDefault();
+        const touch = e.touches[0];
+        const rect = canvas.getBoundingClientRect();
+        mouse.x = (touch.clientX - rect.left) * (CONFIG.WIDTH / rect.width);
+        mouse.y = (touch.clientY - rect.top) * (CONFIG.HEIGHT / rect.height);
+    }
+
+    function handleTouchEnd(e) {
+        e.preventDefault();
+        if (isShooting) releaseShot();
+    }
+
+    // ==================== GAME LOGIC ====================
+    function startPlay() {
+        gameState = "PLAYING";
+        shotClock = CONFIG.SHOT_CLOCK_MAX;
+        resetPositions();
+        setupBallCarrier();
+    }
+
+    function passBall(from, to) {
+        ball.state = "PASSING";
+        ball.startX = from.x;
+        ball.startY = from.y;
+        ball.targetX = to.x;
+        ball.targetY = to.y;
+        ball.progress = 0;
+        ball.speed = 0.05;
+        ball.arcHeight = Math.hypot(to.x - from.x, to.y - from.y) * 0.15;
+        ball.passTarget = to;
+        from.isBallCarrier = false;
+        ballCarrier = null;
+    }
+
+    function shootBall(shooter, power) {
+        ball.state = "SHOOTING";
+        ball.startX = shooter.x;
+        ball.startY = shooter.y;
+        ball.targetX = basket.x;
+        ball.targetY = basket.y;
+        ball.progress = 0;
+        ball.speed = 0.025;
+        ball.arcHeight = Math.hypot(basket.x - shooter.x, basket.y - shooter.y) * 0.5;
+        ball.shotPower = power;
+        ball.shooter = shooter;
+        shooter.isBallCarrier = false;
+        ballCarrier = null;
+    }
+
+    function releaseShot() {
+        if (ballCarrier && ball.state === "HELD" && gameState === "PLAYING") {
+            shootBall(ballCarrier, shootPower);
+        }
+        isShooting = false;
+        showPowerMeter = false;
+        shootPower = 0;
+    }
+
+    function checkShotResult() {
+        const distToBasket = Math.hypot(ball.targetX - basket.x, ball.targetY - basket.y);
+        const baseAccuracy = ball.shooter.shooting;
+
+        // Power modifier (0.65-0.85 is perfect)
+        const powerDiff = Math.abs(ball.shotPower - 0.75);
+        const powerMod = Math.max(0.3, 1 - powerDiff * 1.5);
+
+        // Distance penalty
+        const distPenalty = (selectedDistance / 50) * 0.3;
+
+        // Basket movement penalty
+        const basketPenalty = (distToBasket / 100) * 0.5;
+
+        const finalAccuracy = Math.max(0.05, Math.min(0.95,
+            baseAccuracy * powerMod - distPenalty - basketPenalty));
+
+        if (Math.random() < finalAccuracy) {
+            // MADE!
+            if (offenseTeam === 0) {
+                scorePlayer += pointValue;
+            } else {
+                scoreCPU += pointValue;
+            }
+            lastPlayResult = "SCORE";
+            switchPossession = true;
+        } else {
+            // MISS
+            lastPlayResult = "MISS";
+            currentDown++;
+            if (currentDown > CONFIG.MAX_DOWNS) {
+                switchPossession = true;
+                currentDown = 1;
+            }
+        }
+
+        gameState = "POST_PLAY";
+        postPlayTimer = 90;
+    }
+
+    function playStopped(reason) {
+        lastPlayResult = reason;
+        gameState = "POST_PLAY";
+        postPlayTimer = 60;
+
+        currentDown++;
+        if (currentDown > CONFIG.MAX_DOWNS) {
+            switchPossession = true;
+            currentDown = 1;
+        }
+    }
+
+    function doSwitchPossession() {
+        offenseTeam = 1 - offenseTeam;
+        currentDown = 1;
+        switchPossession = false;
+        gameState = "PRE_PLAY";
+
+        // CPU auto-selects distance
+        if (offenseTeam === 1) {
+            const tier = teams[cpuTeamId].actualTier;
+            const choices = tier === 1 ? [25,30,35,40] : tier === 2 ? [20,25,30] : tier === 3 ? [15,20,25] : [10,15,20];
+            selectedDistance = choices[Math.floor(Math.random() * choices.length)];
+            pointValue = selectedDistance;
+            setTimeout(() => { if (gameState === "PRE_PLAY") startPlay(); }, 1000);
+        }
+    }
+
+    // ==================== AI ====================
+    function updateAI() {
+        if (gameState !== "PLAYING") return;
+
+        // CPU Defense (when player is on offense)
+        if (offenseTeam === 0) {
+            updateDefenseAI();
+            updateBasketAI();
+        }
+        // CPU Offense (when CPU has ball)
+        else {
+            updateOffenseAI();
+        }
+    }
+
+    function updateDefenseAI() {
+        players.forEach(p => {
+            if (p.teamId !== cpuTeamId || p.isOffense) return;
+            if (p.tackleCooldown > 0) p.tackleCooldown--;
+
+            // Find closest offensive player
+            let target = null;
+            let minDist = Infinity;
+            players.forEach(op => {
+                if (op.teamId === playerTeamId && op.isOffense) {
+                    const dist = Math.hypot(op.x - p.x, op.y - p.y);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        target = op;
+                    }
+                }
+            });
+
+            if (target) {
+                const angle = Math.atan2(target.y - p.y, target.x - p.x);
+                let speed = p.speed * 0.8;
+
+                if (target.isBallCarrier) {
+                    speed = p.speed * 1.1;
+
+                    // Attempt tackle
+                    if (minDist < 25 && p.tackleCooldown === 0) {
+                        if (Math.random() < teams[cpuTeamId].tackleChance) {
+                            playStopped("TACKLE");
+                        }
+                        p.tackleCooldown = 60;
+                    }
+                }
+
+                p.x += Math.cos(angle) * speed;
+                p.y += Math.sin(angle) * speed;
+            }
+        });
+    }
+
+    function updateBasketAI() {
+        if (ball.state === "SHOOTING") {
+            // Dodge the shot
+            const dodgeDir = Math.sign(basket.x - ball.targetX) || (Math.random() > 0.5 ? 1 : -1);
+            basket.x += dodgeDir * basket.moveSpeed * 2;
+        } else if (ball.state === "HELD" && ballCarrier) {
+            // Move opposite to ball carrier
+            if (ballCarrier.x < CONFIG.WIDTH / 2) {
+                basket.moveDir = 1;
+            } else {
+                basket.moveDir = -1;
+            }
+            basket.x += basket.moveDir * basket.moveSpeed;
+        } else {
+            // Oscillate
+            basket.x += basket.moveDir * basket.moveSpeed;
+            if (basket.x > basket.baseX + basket.moveRange) basket.moveDir = -1;
+            if (basket.x < basket.baseX - basket.moveRange) basket.moveDir = 1;
+        }
+
+        basket.x = Math.max(50, Math.min(CONFIG.WIDTH - 50, basket.x));
+    }
+
+    function updateOffenseAI() {
+        if (ball.state !== "HELD" || !ballCarrier) return;
+
+        const shotClockPressure = 1 - (shotClock / CONFIG.SHOT_CLOCK_MAX);
+
+        // Shoot if clock is low or good opportunity
+        if (shotClockPressure > 0.7 || (Math.random() < 0.02 && shotClockPressure > 0.3)) {
+            const power = 0.75 + (Math.random() - 0.5) * 0.2;
+            shootBall(ballCarrier, Math.max(0.3, Math.min(1, power)));
+            return;
+        }
+
+        // Occasionally pass
+        if (Math.random() < 0.01) {
+            const teammates = players.filter(p => p.teamId === cpuTeamId && p.isOffense && !p.isBallCarrier);
+            if (teammates.length > 0) {
+                passBall(ballCarrier, teammates[Math.floor(Math.random() * teammates.length)]);
+                return;
+            }
+        }
+
+        // Move towards basket
+        const angle = Math.atan2(basket.y - 80 - ballCarrier.y, basket.x - ballCarrier.x);
+        ballCarrier.x += Math.cos(angle) * 2;
+        ballCarrier.y += Math.sin(angle) * 2;
+    }
+
+    // ==================== UPDATE ====================
+    function update() {
+        if (gameState === "PLAYING") {
+            // Timers
+            gameTimer--;
+            shotClock--;
+
+            if (shotClock <= 0) {
+                playStopped("SHOT CLOCK");
+            }
+
+            if (gameTimer <= 0) {
+                if (currentHalf === 1) {
+                    gameState = "HALFTIME";
+                    currentHalf = 2;
+                    gameTimer = CONFIG.HALF_DURATION;
+                    offenseTeam = 1 - offenseTeam;
+                    currentDown = 1;
+                } else {
+                    gameState = "GAMEOVER";
+                }
+            }
+
+            // Player input (when on offense)
+            if (offenseTeam === 0 && ballCarrier && ball.state === "HELD") {
+                let dx = 0, dy = 0;
+                if (keys['KeyW'] || keys['ArrowUp']) dy = -1;
+                if (keys['KeyS'] || keys['ArrowDown']) dy = 1;
+                if (keys['KeyA'] || keys['ArrowLeft']) dx = -1;
+                if (keys['KeyD'] || keys['ArrowRight']) dx = 1;
+
+                if (dx !== 0 || dy !== 0) {
+                    const angle = Math.atan2(dy, dx);
+                    const speed = isShooting ? ballCarrier.speed * 0.3 : ballCarrier.speed;
+                    ballCarrier.x += Math.cos(angle) * speed;
+                    ballCarrier.y += Math.sin(angle) * speed;
+                    ballCarrier.x = Math.max(20, Math.min(CONFIG.WIDTH - 20, ballCarrier.x));
+                    ballCarrier.y = Math.max(CONFIG.FIELD_TOP, Math.min(CONFIG.FIELD_BOTTOM - 50, ballCarrier.y));
+                }
+
+                // Shooting
+                if (keys['Space']) {
+                    isShooting = true;
+                    showPowerMeter = true;
+                    shootPower = Math.min(1, shootPower + 0.015);
+                }
+            }
+
+            // Update ball
+            if (ball.state === "HELD" && ball.holder) {
+                ball.x = ball.holder.x;
+                ball.y = ball.holder.y - 5;
+            } else if (ball.state === "PASSING" || ball.state === "SHOOTING") {
+                ball.progress += ball.speed;
+
+                if (ball.progress >= 1) {
+                    if (ball.state === "SHOOTING") {
+                        checkShotResult();
+                    } else {
+                        // Pass complete
+                        ball.state = "HELD";
+                        ball.holder = ball.passTarget;
+                        ball.passTarget.isBallCarrier = true;
+                        ballCarrier = ball.passTarget;
+                    }
+                } else {
+                    ball.x = ball.startX + (ball.targetX - ball.startX) * ball.progress;
+                    const arc = Math.sin(ball.progress * Math.PI) * ball.arcHeight;
+                    ball.y = ball.startY + (ball.targetY - ball.startY) * ball.progress - arc;
+                }
+            }
+
+            // Update AI
+            updateAI();
+
+            // Basket glow
+            basket.glowAlpha += 0.03 * basket.glowDir;
+            if (basket.glowAlpha > 0.6) basket.glowDir = -1;
+            if (basket.glowAlpha < 0.1) basket.glowDir = 1;
+        }
+
+        if (gameState === "POST_PLAY") {
+            postPlayTimer--;
+            if (postPlayTimer <= 0) {
+                if (switchPossession) {
+                    doSwitchPossession();
+                } else {
+                    gameState = "PRE_PLAY";
+                    resetPositions();
+                    setupBallCarrier();
+                }
+            }
+        }
+    }
+
+    // ==================== RENDERING ====================
+    function draw() {
+        ctx.fillStyle = '#1a1a2e';
+        ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+
+        if (gameState === "MENU") {
+            drawMenu();
+        } else if (gameState === "TEAM_SELECT") {
+            drawTeamSelect();
+        } else {
+            drawField();
+            drawBasket();
+            drawPlayers();
+            drawBall();
+            drawHUD();
+
+            if (gameState === "PRE_PLAY" && offenseTeam === 0) {
+                drawDistanceSelect();
+            }
+            if (showPowerMeter && ballCarrier) {
+                drawPowerMeter();
+            }
+            if (gameState === "POST_PLAY") {
+                drawPlayResult();
+            }
+            if (gameState === "HALFTIME") {
+                drawHalftime();
+            }
+            if (gameState === "GAMEOVER") {
+                drawGameOver();
+            }
+        }
+    }
+
+    function drawMenu() {
+        ctx.fillStyle = '#4ecdc4';
+        ctx.font = 'bold 48px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('basketALL', CONFIG.WIDTH / 2, 150);
+
+        ctx.fillStyle = '#fff';
+        ctx.font = '20px sans-serif';
+        ctx.fillText('Where Basketball Meets Football!', CONFIG.WIDTH / 2, 200);
+
+        ctx.fillStyle = '#4ecdc4';
+        ctx.fillRect(CONFIG.WIDTH / 2 - 100, 280, 200, 50);
+        ctx.fillStyle = '#1a1a2e';
+        ctx.font = 'bold 24px sans-serif';
+        ctx.fillText('PLAY', CONFIG.WIDTH / 2, 313);
+
+        ctx.fillStyle = '#888';
+        ctx.font = '14px sans-serif';
+        ctx.fillText('Click or tap to start', CONFIG.WIDTH / 2, 380);
+        ctx.fillText('WASD/Arrows: Move | Click: Pass | Space: Shoot', CONFIG.WIDTH / 2, 420);
+    }
+
+    function drawTeamSelect() {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 32px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('SELECT YOUR TEAM', CONFIG.WIDTH / 2, 60);
+
+        ctx.fillStyle = '#ffd700';
+        ctx.font = '14px sans-serif';
+        ctx.fillText('Teams are randomly balanced - choose by color!', CONFIG.WIDTH / 2, 100);
+
+        for (let i = 0; i < 4; i++) {
+            const team = teams[i];
+            const x = 100 + i * 160;
+            const y = CONFIG.HEIGHT / 2;
+
+            ctx.fillStyle = team.primary;
+            ctx.fillRect(x - 60, y - 80, 120, 160);
+
+            ctx.fillStyle = team.secondary;
+            ctx.fillRect(x - 30, y - 50, 60, 70);
+
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px sans-serif';
+            ctx.fillText(team.name, x, y + 60);
+        }
+    }
+
+    function drawField() {
+        // Green turf
+        ctx.fillStyle = '#228b22';
+        ctx.fillRect(20, CONFIG.FIELD_TOP, CONFIG.WIDTH - 40, CONFIG.FIELD_BOTTOM - CONFIG.FIELD_TOP);
+
+        // Yard lines
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1;
+        const pixelsPerYard = (CONFIG.FIELD_BOTTOM - CONFIG.FIELD_TOP) / 50;
+        for (let y = 0; y <= 50; y += 5) {
+            const lineY = CONFIG.FIELD_TOP + y * pixelsPerYard;
+            ctx.beginPath();
+            ctx.moveTo(20, lineY);
+            ctx.lineTo(CONFIG.WIDTH - 20, lineY);
+            ctx.stroke();
+
+            ctx.fillStyle = '#fff';
+            ctx.font = '10px sans-serif';
+            ctx.textAlign = 'right';
+            ctx.fillText(y.toString(), 18, lineY + 4);
+        }
+
+        // End zone
+        ctx.fillStyle = 'rgba(139, 0, 0, 0.5)';
+        ctx.fillRect(20, CONFIG.FIELD_TOP - 30, CONFIG.WIDTH - 40, 30);
+    }
+
+    function drawBasket() {
+        const bx = basket.x, by = basket.y;
+
+        // Glow
+        ctx.fillStyle = `rgba(255, 255, 0, ${basket.glowAlpha})`;
+        ctx.beginPath();
+        ctx.arc(bx, by, 35, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Backboard
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(bx - 30, by - 35, 60, 30);
+        ctx.strokeStyle = '#000';
+        ctx.strokeRect(bx - 30, by - 35, 60, 30);
+
+        // Target square
+        ctx.strokeStyle = '#f00';
+        ctx.strokeRect(bx - 12, by - 28, 24, 18);
+
+        // Rim
+        ctx.fillStyle = '#ff6432';
+        ctx.beginPath();
+        ctx.ellipse(bx, by, 20, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Net lines
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1;
+        for (let i = -3; i <= 3; i++) {
+            ctx.beginPath();
+            ctx.moveTo(bx + i * 5, by + 5);
+            ctx.lineTo(bx + i * 4, by + 25);
+            ctx.stroke();
+        }
+    }
+
+    function drawPlayers() {
+        players.forEach(p => {
+            // Shadow
+            ctx.fillStyle = 'rgba(0,0,0,0.3)';
+            ctx.beginPath();
+            ctx.ellipse(p.x, p.y + 12, 12, 6, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Body
+            ctx.fillStyle = p.color;
+            ctx.fillRect(p.x - 10, p.y - 12, 20, 18);
+
+            // Jersey number
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 10px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(p.jerseyNum.toString(), p.x, p.y);
+
+            // Head
+            ctx.fillStyle = '#deb887';
+            ctx.beginPath();
+            ctx.arc(p.x, p.y - 18, 7, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Ball carrier indicator
+            if (p.isBallCarrier) {
+                ctx.fillStyle = '#ffd700';
+                ctx.beginPath();
+                ctx.arc(p.x, p.y - 30, 5, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        });
+    }
+
+    function drawBall() {
+        // Shadow when in air
+        if (ball.state === "SHOOTING" || ball.state === "PASSING") {
+            ctx.fillStyle = 'rgba(0,0,0,0.3)';
+            const shadowY = ball.startY + (ball.targetY - ball.startY) * ball.progress;
+            ctx.beginPath();
+            ctx.ellipse(ball.x, shadowY + 5, 8, 4, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Ball
+        ctx.fillStyle = '#ff7f27';
+        ctx.beginPath();
+        ctx.arc(ball.x, ball.y, 8, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Lines
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(ball.x - 6, ball.y);
+        ctx.lineTo(ball.x + 6, ball.y);
+        ctx.moveTo(ball.x, ball.y - 6);
+        ctx.lineTo(ball.x, ball.y + 6);
+        ctx.stroke();
+    }
+
+    function drawHUD() {
+        // Top bar
+        ctx.fillStyle = 'rgba(0,0,0,0.8)';
+        ctx.fillRect(0, 0, CONFIG.WIDTH, 45);
+
+        // Player score
+        ctx.fillStyle = teams[playerTeamId].primary;
+        ctx.fillRect(10, 5, 140, 35);
+        ctx.fillStyle = '#fff';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(teams[playerTeamId].name, 15, 20);
+        ctx.font = 'bold 16px sans-serif';
+        ctx.fillText(scorePlayer.toString(), 15, 36);
+
+        // CPU score
+        ctx.fillStyle = teams[cpuTeamId].primary;
+        ctx.fillRect(CONFIG.WIDTH - 150, 5, 140, 35);
+        ctx.fillStyle = '#fff';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.fillText(teams[cpuTeamId].name, CONFIG.WIDTH - 15, 20);
+        ctx.font = 'bold 16px sans-serif';
+        ctx.fillText(scoreCPU.toString(), CONFIG.WIDTH - 15, 36);
+
+        // Center info
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#fff';
+        ctx.font = '14px sans-serif';
+        const mins = Math.floor(gameTimer / 3600);
+        const secs = Math.floor((gameTimer % 3600) / 60);
+        ctx.fillText(`Q${currentHalf} ${mins}:${secs.toString().padStart(2, '0')}`, CONFIG.WIDTH / 2, 18);
+
+        // Shot clock
+        if (gameState === "PLAYING") {
+            const shotSec = Math.ceil(shotClock / 60);
+            ctx.fillStyle = shotSec <= 5 ? '#f00' : '#ff0';
+            ctx.fillText(`SHOT: ${shotSec}`, CONFIG.WIDTH / 2, 36);
+        }
+
+        // Down
+        ctx.fillStyle = '#4ecdc4';
+        ctx.fillText(`DOWN ${currentDown}/${CONFIG.MAX_DOWNS}`, CONFIG.WIDTH / 2 + 100, 27);
+
+        // Possession
+        ctx.fillStyle = offenseTeam === 0 ? '#4ecdc4' : '#f66';
+        ctx.fillText(offenseTeam === 0 ? 'YOUR BALL' : 'CPU BALL', CONFIG.WIDTH / 2 - 100, 27);
+    }
+
+    function drawDistanceSelect() {
+        ctx.fillStyle = 'rgba(0,0,0,0.8)';
+        ctx.fillRect(0, CONFIG.HEIGHT - 180, CONFIG.WIDTH, 180);
+
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('SELECT SHOT DISTANCE', CONFIG.WIDTH / 2, CONFIG.HEIGHT - 155);
+
+        const distances = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
+        for (let i = 0; i < 10; i++) {
+            const x = 80 + (i % 5) * 130;
+            const y = CONFIG.HEIGHT - 140 + Math.floor(i / 5) * 50;
+            const dist = distances[i];
+
+            ctx.fillStyle = dist === selectedDistance ? '#4ecdc4' : '#666';
+            ctx.fillRect(x - 55, y - 18, 110, 36);
+
+            ctx.fillStyle = dist === selectedDistance ? '#000' : '#fff';
+            ctx.font = '12px sans-serif';
+            ctx.fillText(`${dist} yds = ${dist} pts`, x, y + 4);
+        }
+
+        // Start button
+        ctx.fillStyle = '#4ecdc4';
+        ctx.fillRect(CONFIG.WIDTH / 2 - 80, CONFIG.HEIGHT - 48, 160, 36);
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.fillText('START PLAY', CONFIG.WIDTH / 2, CONFIG.HEIGHT - 25);
+    }
+
+    function drawPowerMeter() {
+        const x = ballCarrier.x;
+        const y = ballCarrier.y - 50;
+
+        ctx.fillStyle = '#333';
+        ctx.fillRect(x - 30, y - 5, 60, 10);
+
+        const color = shootPower >= 0.65 && shootPower <= 0.85 ? '#0f0' :
+                      shootPower >= 0.5 && shootPower <= 0.9 ? '#ff0' : '#f00';
+        ctx.fillStyle = color;
+        ctx.fillRect(x - 30, y - 5, 60 * shootPower, 10);
+
+        // Perfect zone markers
+        ctx.strokeStyle = '#fff';
+        ctx.beginPath();
+        ctx.moveTo(x - 30 + 60 * 0.65, y - 8);
+        ctx.lineTo(x - 30 + 60 * 0.65, y + 8);
+        ctx.moveTo(x - 30 + 60 * 0.85, y - 8);
+        ctx.lineTo(x - 30 + 60 * 0.85, y + 8);
+        ctx.stroke();
+    }
+
+    function drawPlayResult() {
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.fillRect(CONFIG.WIDTH / 2 - 100, CONFIG.HEIGHT / 2 - 40, 200, 80);
+
+        ctx.fillStyle = lastPlayResult === "SCORE" ? '#4ecdc4' : '#f66';
+        ctx.font = 'bold 24px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(lastPlayResult, CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2);
+
+        if (lastPlayResult === "SCORE") {
+            ctx.fillStyle = '#fff';
+            ctx.font = '16px sans-serif';
+            ctx.fillText(`+${pointValue} points!`, CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2 + 25);
+        }
+    }
+
+    function drawHalftime() {
+        ctx.fillStyle = 'rgba(0,0,0,0.85)';
+        ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 36px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('HALFTIME', CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2 - 60);
+
+        ctx.font = '20px sans-serif';
+        ctx.fillText(`${teams[playerTeamId].name}: ${scorePlayer}`, CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2 - 10);
+        ctx.fillText(`${teams[cpuTeamId].name}: ${scoreCPU}`, CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2 + 20);
+
+        ctx.fillStyle = '#4ecdc4';
+        ctx.font = '16px sans-serif';
+        ctx.fillText('Click to continue', CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2 + 70);
+    }
+
+    function drawGameOver() {
+        ctx.fillStyle = 'rgba(0,0,0,0.85)';
+        ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+
+        const winner = scorePlayer > scoreCPU ? 'YOU WIN!' : scorePlayer < scoreCPU ? 'CPU WINS!' : 'TIE!';
+        ctx.fillStyle = scorePlayer > scoreCPU ? '#4ecdc4' : '#f66';
+        ctx.font = 'bold 40px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(winner, CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2 - 60);
+
+        ctx.fillStyle = '#fff';
+        ctx.font = '24px sans-serif';
+        ctx.fillText(`${scorePlayer} - ${scoreCPU}`, CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2);
+
+        ctx.fillStyle = '#4ecdc4';
+        ctx.font = '16px sans-serif';
+        ctx.fillText('Click to play again', CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2 + 60);
+    }
+
+    // ==================== GAME LOOP ====================
+    function gameLoop() {
+        update();
+        draw();
+        requestAnimationFrame(gameLoop);
+    }
+
+    // Start the game
+    init();
+    </script>
+</body>
+</html>

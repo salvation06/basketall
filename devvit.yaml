@@ -1,0 +1,7 @@
+name: basketall-ai
+version: 0.0.2
+description: >-
+  basketALL - Where Basketball Meets Football! A 7v7 hybrid sport with a moving
+  hoop.
+
+webview: true
